@@ -101,7 +101,7 @@ func newBuildCmd() *cobra.Command {
 				}
 
 				format := strings.ToLower(t.Format)
-				doMerge := t.Merge != nil && (format == "yaml" || format == "json")
+				doMerge := t.Merge != nil && (format == "yaml" || format == "json" || format == "kdl")
 
 				if dryRun {
 					if doMerge {
@@ -111,16 +111,24 @@ func newBuildCmd() *cobra.Command {
 					}
 					continue
 				}
-
-				if doMerge {
-					content, err := blend.BlendStructured(format, t.Merge.Rules, rt.Files)
-					if err != nil {
-						return fmt.Errorf("%s: merge: %w", rt.Name, err)
-					}
-					if err := executor.WriteAtomic(rt.Output, content); err != nil {
-						return err
-					}
-					fmt.Fprintf(os.Stderr, "  action: merged (%s) -> wrote %s\n", format, rt.Output)
+			  if doMerge {
+    			var content string
+    			var err error
+    			switch format {
+    				case "yaml", "json":
+    		    	content, err = blend.BlendStructured(format, t.Merge.Rules, rt.Files)
+    				case "kdl":
+      		  	content, err = blend.BlendKDL(t.Merge.Rules, rt.Files)
+   					default:
+        			err = fmt.Errorf("unsupported merge format %q", format)
+    			}
+   				if err != nil {
+        		return fmt.Errorf("%s: merge: %w", rt.Name, err)
+    			}
+    			if err := executor.WriteAtomic(rt.Output, content); err != nil {
+        		return err
+    			}
+    			fmt.Fprintf(os.Stderr, "  action: merged (%s) -> wrote %s\n", format, rt.Output)
 				} else {
 					if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
 						return err
