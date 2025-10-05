@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -13,7 +12,8 @@ import (
 )
 
 func newRunCmd() *cobra.Command {
-	var trace bool
+	var quiet bool
+	var verbose bool
 	var debounceMS int
 
 	cmd := &cobra.Command{
@@ -34,25 +34,23 @@ func newRunCmd() *cobra.Command {
 				return err
 			}
 
-			if trace {
-				base, err := cfg.BaseDir()
-				if err != nil {
-					return err
-				}
-				fmt.Fprintf(os.Stderr, "confb(run): baseDir = %s\n", base)
-				absCfg, _ := filepath.Abs(cfgPath)
-				fmt.Fprintf(os.Stderr, "confb(run): config = %s\n", absCfg)
+			level := daemon.LogNormal
+			if quiet {
+				level = daemon.LogQuiet
+			} else if verbose {
+				level = daemon.LogVerbose
 			}
 
 			opts := daemon.Options{
-				Trace:    trace,
+				LogLevel: level,
 				Debounce: time.Duration(debounceMS) * time.Millisecond,
 			}
 			return daemon.Run(cfg, opts)
 		},
 	}
 
-	cmd.Flags().BoolVar(&trace, "trace", false, "print watch set and rebuild decisions")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress non-error logs")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "show detailed trace logs")
 	cmd.Flags().IntVar(&debounceMS, "debounce-ms", 200, "debounce window in milliseconds")
 
 	return cmd

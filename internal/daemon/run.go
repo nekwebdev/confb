@@ -18,19 +18,34 @@ import (
 	"github.com/nekwebdev/confb/internal/plan"
 )
 
+// log levels
+type LogLevel int
+
+const (
+	LogQuiet LogLevel = iota
+	LogNormal
+	LogVerbose
+)
+
 type Options struct {
-	Trace    bool
+	LogLevel LogLevel
 	Debounce time.Duration
 }
 
-// Run watches all source directories and rebuilds targets when content changes.
-// It exits cleanly on SIGINT/SIGTERM.
 func Run(cfg *config.Config, opts Options) error {
 	if opts.Debounce <= 0 {
 		opts.Debounce = 200 * time.Millisecond
 	}
 
-	// per-target state
+	// logging helper with timestamp
+	logf := func(level LogLevel, format string, args ...any) {
+		if opts.LogLevel >= level {
+			ts := time.Now().Format("2006-01-02 15:04:05")
+			msg := fmt.Sprintf(format, args...)
+			fmt.Fprintf(os.Stderr, "[%s] %s", ts, msg)
+		}
+	}
+
 	type tstate struct {
 		target   config.Target
 		lastSum  string
@@ -38,7 +53,7 @@ func Run(cfg *config.Config, opts Options) error {
 	}
 	states := make([]*tstate, 0, len(cfg.Targets))
 
-	// initial plan + initial write (normalized output) + baseline checksum
+	// initial plan + initial write (normalized output)
 	for i := range cfg.Targets {
 		t := cfg.Targets[i]
 		rt, err := plan.PlanTarget(cfg, t, "")
@@ -49,24 +64,21 @@ func Run(cfg *config.Config, opts Options) error {
 		if err != nil {
 			return err
 		}
-		if opts.Trace {
-			fmt.Fprintf(os.Stderr, "confb(run): initial %q sha=%s\n", rt.Name, sum)
-		}
+
+		logf(LogNormal, "confb(run): building %q...\n", rt.Name)
 		if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
 			return err
 		}
-		if opts.Trace {
-			fmt.Fprintf(os.Stderr, "confb(run): wrote %s\n", rt.Output)
-		}
+		logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
 
 		ws, err := computeWatchDirs(cfg, t)
 		if err != nil {
 			return err
 		}
-		if opts.Trace {
-			fmt.Fprintf(os.Stderr, "confb(run): watch %q dirs:\n", rt.Name)
+		if opts.LogLevel >= LogVerbose {
+			logf(LogVerbose, "confb(run): watch %q dirs:\n", rt.Name)
 			for d := range ws {
-				fmt.Fprintf(os.Stderr, "  - %s\n", d)
+				logf(LogVerbose, "  - %s\n", d)
 			}
 		}
 
@@ -77,14 +89,13 @@ func Run(cfg *config.Config, opts Options) error {
 		})
 	}
 
-	// one watcher, many dirs
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
 	}
 	defer w.Close()
 
-	// add unique dirs
+	// gather all directories
 	global := map[string]struct{}{}
 	for _, st := range states {
 		for d := range st.watchSet {
@@ -101,16 +112,14 @@ func Run(cfg *config.Config, opts Options) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// signal handling
 	sigc := make(chan os.Signal, 2)
 	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 
-	// debounce bookkeeping
 	var mu sync.Mutex
 	pending := make([]bool, len(states))
 	timers := make([]*time.Timer, len(states))
 
-	// map dir -> target indices
+	// dir → target indices
 	dirToTargets := map[string][]int{}
 	for i, st := range states {
 		for d := range st.watchSet {
@@ -122,47 +131,39 @@ func Run(cfg *config.Config, opts Options) error {
 		st := states[idx]
 		rt, err := plan.PlanTarget(cfg, st.target, "")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "confb(run): plan error %q: %v\n", st.target.Name, err)
+			logf(LogNormal, "confb(run): plan error %q: %v\n", st.target.Name, err)
 			return
 		}
 		sum, err := executor.SHA256OfFiles(rt.Files)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "confb(run): checksum error %q: %v\n", st.target.Name, err)
+			logf(LogNormal, "confb(run): checksum error %q: %v\n", st.target.Name, err)
 			return
 		}
 		if sum == st.lastSum {
-			if opts.Trace {
-				fmt.Fprintf(os.Stderr, "confb(run): %q unchanged (sha=%s)\n", st.target.Name, sum)
-			}
+			logf(LogVerbose, "confb(run): %q unchanged (sha=%s)\n", st.target.Name, sum)
 			return
 		}
-		if opts.Trace {
-			fmt.Fprintf(os.Stderr, "confb(run): %q changed (old=%s new=%s)\n", st.target.Name, st.lastSum, sum)
-		}
+		logf(LogNormal, "confb(run): %q changed, rebuilding...\n", st.target.Name)
 		if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
-			fmt.Fprintf(os.Stderr, "confb(run): write error %q: %v\n", st.target.Name, err)
+			logf(LogNormal, "confb(run): write error %q: %v\n", st.target.Name, err)
 			return
 		}
 		st.lastSum = sum
-		if opts.Trace {
-			fmt.Fprintf(os.Stderr, "confb(run): wrote %s\n", rt.Output)
-		}
+		logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
 	}
 
-	// event loop
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case err := <-w.Errors:
-				fmt.Fprintf(os.Stderr, "confb(run): watcher error: %v\n", err)
+				logf(LogNormal, "confb(run): watcher error: %v\n", err)
 			case ev := <-w.Events:
 				evDir := filepath.Dir(ev.Name)
 				indices := dirToTargets[evDir]
-				if opts.Trace {
-					fmt.Fprintf(os.Stderr, "confb(run): fs %s %s -> %d target(s)\n", ev.Op.String(), ev.Name, len(indices))
-				}
+				logf(LogVerbose, "confb(run): fs %s %s -> %d target(s)\n",
+					ev.Op.String(), ev.Name, len(indices))
 				for _, idx := range indices {
 					mu.Lock()
 					if timers[idx] != nil {
@@ -182,16 +183,12 @@ func Run(cfg *config.Config, opts Options) error {
 		}
 	}()
 
-	// block until signal
 	s := <-sigc
-	if opts.Trace {
-		fmt.Fprintf(os.Stderr, "confb(run): signal %v, exiting\n", s)
-	}
+	logf(LogNormal, "confb(run): received %v, exiting\n", s)
 	cancel()
 	return nil
 }
 
-// computeWatchDirs: watch the dir of each explicit file and the dir part of each glob.
 func computeWatchDirs(cfg *config.Config, t config.Target) (map[string]struct{}, error) {
 	baseDir, err := cfg.BaseDir()
 	if err != nil {
