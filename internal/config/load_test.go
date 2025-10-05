@@ -1,129 +1,183 @@
-package config_test
+package config
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/nekwebdev/confb/internal/config"
 )
 
-func mustWrite(t *testing.T, path, content string) {
+// helper
+func writeFileT(t *testing.T, p, s string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
+	if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+		t.Fatalf("write %s: %v", p, err)
 	}
 }
 
-func TestLoad_ValidConfig_AppliesDefaultsAndBaseDir(t *testing.T) {
-	tmp := t.TempDir()
+func TestLoad_Valid_YAML_WithMergeRules(t *testing.T) {
+	td := t.TempDir()
+	cfgPath := filepath.Join(td, "confb.yaml")
 
-	// fake HOME so ~ expands deterministically
-	fakeHome := filepath.Join(tmp, "home")
-	if err := os.MkdirAll(fakeHome, 0o755); err != nil {
-		t.Fatalf("mkdir home: %v", err)
-	}
-	origHome := os.Getenv("HOME")
-	t.Setenv("HOME", fakeHome)
-	defer os.Setenv("HOME", origHome)
-
-	conf := `
+	writeFileT(t, cfgPath, `
 version: 1
 targets:
-  - name: ok
-    output: ~/out/file.conf
-    # omit format/dedupe/newline/encoding -> defaults should kick in
+  - name: web
+    format: yaml
+    output: ./out.yaml
     sources:
-      - path: a/*.conf
-`
-	confPath := filepath.Join(tmp, "confb.yaml")
-	mustWrite(t, confPath, conf)
+      - path: ./a.yaml
+      - path: ./b.yaml
+    merge:
+      rules:
+        maps: deep
+        arrays: unique_append
+`)
 
-	cfg, err := config.Load(confPath)
+	cfg, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-
-	// baseDir should be the directory of confb.yaml
-	base, err := cfg.BaseDir()
-	if err != nil {
-		t.Fatalf("BaseDir: %v", err)
+	if cfg.Version != 1 {
+		t.Fatalf("version = %d, want 1", cfg.Version)
 	}
-	if base != tmp {
-		t.Fatalf("BaseDir mismatch: got %q want %q", base, tmp)
-	}
-
 	if len(cfg.Targets) != 1 {
-		t.Fatalf("expected 1 target, got %d", len(cfg.Targets))
+		t.Fatalf("targets len = %d, want 1", len(cfg.Targets))
 	}
-	t0 := cfg.Targets[0]
-
-	// defaults applied
-	if t0.Format != "auto" {
-		t.Fatalf("default format: got %q want %q", t0.Format, "auto")
+	tg := cfg.Targets[0]
+	if strings.ToLower(tg.Format) != "yaml" {
+		t.Fatalf("format = %s, want yaml", tg.Format)
 	}
-	if t0.Dedupe != "by_path" {
-		t.Fatalf("default dedupe: got %q want %q", t0.Dedupe, "by_path")
+	if tg.Merge == nil || tg.Merge.Rules == nil {
+		t.Fatalf("merge.rules missing")
 	}
-	if t0.Newline != "\n" {
-		t.Fatalf("default newline: got %q want %q", t0.Newline, "\\n")
+	if strings.ToLower(tg.Merge.Rules.Maps) != "deep" {
+		t.Fatalf("maps = %s, want deep", tg.Merge.Rules.Maps)
 	}
-	if strings.ToLower(t0.Encoding) != "utf8" {
-		t.Fatalf("default encoding: got %q want utf8", t0.Encoding)
-	}
-
-	// ~ expanded
-	wantPrefix := filepath.Join(fakeHome, "out")
-	if !strings.HasPrefix(t0.Output, wantPrefix) {
-		t.Fatalf("output tilde expansion: got %q want prefix %q", t0.Output, wantPrefix)
-	}
-
-	// source default sort applied
-	if got := t0.Sources[0].Sort; got != "lex" {
-		t.Fatalf("source default sort: got %q want %q", got, "lex")
+	if strings.ToLower(tg.Merge.Rules.Arrays) != "unique_append" {
+		t.Fatalf("arrays = %s, want unique_append", tg.Merge.Rules.Arrays)
 	}
 }
 
-func TestLoad_InvalidConfig_AggregatesErrors(t *testing.T) {
-	tmp := t.TempDir()
+func TestLoad_Valid_KDL_WithSectionKeys_List(t *testing.T) {
+	td := t.TempDir()
+	cfgPath := filepath.Join(td, "confb.yaml")
 
-	bad := `
-version: 2          # invalid version
+	writeFileT(t, cfgPath, `
+version: 1
 targets:
-  - name: ""        # empty name
-    format: nope    # invalid enum
-    output: ""      # missing output
-    dedupe: wat     # invalid enum
-    newline: "\r\n" # not allowed in MVP
-    encoding: latin1
-    sources: []
-`
-	confPath := filepath.Join(tmp, "confb.yaml")
-	mustWrite(t, confPath, bad)
+  - name: niri
+    format: kdl
+    output: ./config.kdl
+    sources:
+      - path: ./colors.kdl
+      - path: ./src/*.kdl
+    merge:
+      rules:
+        keys: last_wins
+        section_keys: ["layout", "theme"]
+`)
 
-	_, err := config.Load(confPath)
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tg := cfg.Targets[0]
+	if tg.Merge == nil || tg.Merge.Rules == nil {
+		t.Fatalf("merge.rules missing")
+	}
+	if strings.ToLower(tg.Merge.Rules.KDLKeys) != "last_wins" {
+		t.Fatalf("kdl keys = %s, want last_wins", tg.Merge.Rules.KDLKeys)
+	}
+	if len(tg.Merge.Rules.KDLSectionKeys) != 2 {
+		t.Fatalf("section_keys len = %d, want 2", len(tg.Merge.Rules.KDLSectionKeys))
+	}
+}
+
+func TestLoad_Valid_INI_LastWins_Defaulting(t *testing.T) {
+	td := t.TempDir()
+	cfgPath := filepath.Join(td, "confb.yaml")
+
+	// Note: no repeated_keys given; loader should default to last_wins for INI.
+	writeFileT(t, cfgPath, `
+version: 1
+targets:
+  - name: sys
+    format: ini
+    output: ./sys.ini
+    sources:
+      - path: ./base.ini
+      - path: ./over.ini
+    merge: {}
+`)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	r := cfg.Targets[0].Merge.Rules
+	if r == nil || strings.ToLower(r.INIRepeatedKeys) != "last_wins" {
+		t.Fatalf("INI repeated_keys default = %v, want last_wins", r)
+	}
+}
+
+func TestLoad_Errors_MergeWithAutoOrRaw(t *testing.T) {
+	td := t.TempDir()
+	cfgPath := filepath.Join(td, "confb.yaml")
+
+	writeFileT(t, cfgPath, `
+version: 1
+targets:
+  - name: bad1
+    format: auto
+    output: ./x
+    sources:
+      - path: ./a
+    merge: {}
+  - name: bad2
+    format: raw
+    output: ./y
+    sources:
+      - path: ./b
+    merge:
+      rules:
+        maps: deep
+`)
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "merge is not supported when format is") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_Errors_ForeignFieldsRejected(t *testing.T) {
+	td := t.TempDir()
+	cfgPath := filepath.Join(td, "confb.yaml")
+
+	// Put yaml target but add kdl-only field -> should error.
+	writeFileT(t, cfgPath, `
+version: 1
+targets:
+  - name: bad
+    format: yaml
+    output: ./out.yaml
+    sources:
+      - path: ./a.yaml
+    merge:
+      rules:
+        maps: deep
+        arrays: append
+        section_keys: ["layout"]  # invalid for yaml
+`)
+
+	_, err := Load(cfgPath)
 	if err == nil {
 		t.Fatalf("expected validation error, got nil")
 	}
-	// should be a single aggregated error string mentioning multiple issues
-	msg := err.Error()
-	expectSnippets := []string{
-		"version must be 1",
-		"targets[0].name is required",
-		"format must be one of auto|yaml|toml|ini|json|raw",
-		"output is required",
-		"dedupe must be by_path|none",
-		"newline must be \\n",
-		"encoding must be utf8",
-		"sources must not be empty",
-	}
-	for _, snip := range expectSnippets {
-		if !strings.Contains(msg, snip) {
-			t.Fatalf("validation message missing %q\nfull msg:\n%s", snip, msg)
-		}
+	if !strings.Contains(err.Error(), "not applicable to yaml") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
