@@ -1,0 +1,44 @@
+project_name: confb
+
+release:
+  # Let GoReleaser create & publish a GitHub Release on tag push
+  github:
+    owner: nekwebdev
+    name: confb
+  draft: false
+  prerelease: false
+
+builds:
+  - id: confb
+    main: ./cmd/confb
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Tag}}
+    flags:
+      - -trimpath
+
+archives:
+  - id: confb-archive
+    builds: [confb]
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - systemd/confb.service
+      - confb.sample.yaml
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: github
+  sort: asc
+
+# Optional: create a snapshot locally without publishing (useful for testing)
+snapshot:
+  name_template: "snapshot-{{ .Commit }}"
+
