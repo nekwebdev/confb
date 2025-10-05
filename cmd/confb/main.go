@@ -13,6 +13,7 @@ var version = "dev"
 func main() {
 	// set up the root CLI command
 	root := cli.NewRootCmd(version)
+  root.Version = version
 
 	// execute parses CLI args and runs the right subcommand
 	if err := root.Execute(); err != nil {
@@ -20,4 +21,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-
