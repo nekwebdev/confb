@@ -24,6 +24,7 @@ from an ordered set of fragments. Future versions can run as a daemon.`,
 
 	// attach subcommands
 	cmd.AddCommand(newBuildCmd())
+  cmd.AddCommand(newRunCmd()) // register daemon
 
 	return cmd
 }
