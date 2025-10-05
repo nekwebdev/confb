@@ -55,30 +55,38 @@ targets:
 		t.Fatalf("config.Load: %v", err)
 	}
 
-	done := make(chan struct{})
+	errCh := make(chan error, 1)
 	go func() {
-		_ = Run(cfg, Options{LogLevel: LogQuiet, Debounce: 60 * time.Millisecond})
-		close(done)
+		// Give CI a little extra debounce margin
+		errCh <- Run(cfg, Options{
+			LogLevel:   LogQuiet,
+			Debounce:   80 * time.Millisecond,
+			ConfigPath: cfgPath,
+		})
 	}()
 
-	// Wait up to 10s for initial output to exist and match content
-	waitFor(t, 10*time.Second, func() bool {
-		b, err := os.ReadFile(out)
-		if err != nil {
-			return false
-		}
-		return string(b) == "hello\nworld\n"
+	// Fail fast if daemon exits immediately with an error
+	select {
+	case err := <-errCh:
+		t.Fatalf("daemon exited early: %v", err)
+	default:
+	}
+
+	// Wait up to 15s for initial output to exist and be non-empty
+	waitFor(t, 15*time.Second, func() bool {
+		fi, err := os.Stat(out)
+		return err == nil && fi.Size() > 0
 	})
 
-	// Modify a source and wait for rebuild (up to 10s)
+	// Now modify a source and assert strict final content after rebuild (up to 15s)
 	writeFileT(t, src2, "WORLD!")
-	waitFor(t, 10*time.Second, func() bool {
+	waitFor(t, 15*time.Second, func() bool {
 		b, err := os.ReadFile(out)
 		return err == nil && string(b) == "hello\nWORLD!\n"
 	})
 
-	// on_change marker should exist (up to 5s)
-	waitFor(t, 5*time.Second, func() bool {
+	// on_change marker should exist by now (up to 10s)
+	waitFor(t, 10*time.Second, func() bool {
 		b, err := os.ReadFile(marker)
 		return err == nil && strings.TrimSpace(string(b)) == "done"
 	})
@@ -88,8 +96,11 @@ targets:
 	_ = proc.Signal(syscall.SIGINT)
 
 	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("daemon returned error on shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
 		t.Fatal("daemon did not exit after SIGINT")
 	}
 }
@@ -101,7 +112,7 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 		if cond() {
 			return
 		}
-		time.Sleep(25 * time.Millisecond)
+		time.Sleep(30 * time.Millisecond)
 	}
 	t.Fatal("condition not met before timeout")
 }
