@@ -1,10 +1,10 @@
 package cli
 
 import (
-	"time"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -16,6 +16,7 @@ func newRunCmd() *cobra.Command {
 	var quiet bool
 	var verbose bool
 	var debounceMS int
+	var color bool
 
 	cmd := &cobra.Command{
 		Use:   "run",
@@ -53,7 +54,8 @@ func newRunCmd() *cobra.Command {
 			opts := daemon.Options{
 				LogLevel:   level,
 				Debounce:   msToDuration(debounceMS),
-				ConfigPath: absCfg, // so SIGHUP reload knows where to read from
+				ConfigPath: absCfg,
+				Color:      color,
 			}
 
 			return daemon.Run(cfg, opts)
@@ -63,11 +65,12 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "reduce log output")
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "increase log output (debug)")
 	cmd.Flags().IntVar(&debounceMS, "debounce-ms", 200, "debounce interval for rebuilds (milliseconds)")
+	cmd.Flags().BoolVar(&color, "color", false, "enable ANSI color for log level tags")
 
 	return cmd
 }
 
-func msToDuration(ms int) (d time.Duration) {
+func msToDuration(ms int) time.Duration {
 	if ms <= 0 {
 		return 200 * time.Millisecond
 	}

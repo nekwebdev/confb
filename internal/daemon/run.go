@@ -35,6 +35,7 @@ type Options struct {
 	LogLevel   LogLevel
 	Debounce   time.Duration
 	ConfigPath string // ABS or relative; used for SIGHUP reload
+	Color      bool   // enable ANSI color for level tags
 }
 
 type tstate struct {
@@ -43,19 +44,44 @@ type tstate struct {
 	watchSet map[string]struct{} // dirs to watch
 }
 
+// --- logging helpers ---
+
+func levelTag(level LogLevel, color bool) string {
+	switch level {
+	case LogVerbose:
+		if color {
+			return "\x1b[36mDBG\x1b[0m" // cyan
+		}
+		return "DBG"
+	default: // LogNormal
+		if color {
+			return "\x1b[32mINF\x1b[0m" // green
+		}
+		return "INF"
+	}
+}
+
+func logLine(level LogLevel, color bool, target, msg string) {
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	tag := levelTag(level, color)
+	if target != "" {
+		fmt.Fprintf(os.Stderr, "[%s] %s confb(run) [target=%s] %s\n", ts, tag, target, strings.TrimRight(msg, "\n"))
+	} else {
+		fmt.Fprintf(os.Stderr, "[%s] %s confb(run) %s\n", ts, tag, strings.TrimRight(msg, "\n"))
+	}
+}
+
 func Run(cfg *config.Config, opts Options) error {
 	if opts.Debounce <= 0 {
 		opts.Debounce = 200 * time.Millisecond
 	}
 
-	// logging helper with timestamp
-	logf := func(level LogLevel, format string, args ...any) {
-		if opts.LogLevel >= level {
-			ts := time.Now().Format("2006-01-02 15:04:05")
-			msg := fmt.Sprintf(format, args...)
-			fmt.Fprintf(os.Stderr, "[%s] %s", ts, msg)
-		}
-	}
+  // logf(level, target, "fmt %s", args...)
+  logf := func(level LogLevel, target, format string, args ...any) {
+	  if opts.LogLevel >= level {
+		  logLine(level, opts.Color, target, fmt.Sprintf(format, args...))
+	  }
+  }
 
 	// ---- helper closures ----
 
@@ -78,16 +104,17 @@ func Run(cfg *config.Config, opts Options) error {
 				if err := executor.WriteAtomic(rt.Output, content); err != nil {
 					return nil, err
 				}
-				logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
 			} else {
 				if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
 					return nil, err
 				}
-				logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
 			}
+			logf(LogNormal, t.Name, "wrote %s", rt.Output)
 
 			if strings.TrimSpace(t.OnChange) != "" {
-				runOnChange(t, rt.Output, logf, opts.LogLevel)
+				runOnChange(t, rt.Output, func(level LogLevel, msg string) {
+					logf(level, t.Name, msg)
+				}, opts.LogLevel)
 			}
 
 			ws, err := computeWatchDirs(c, t)
@@ -95,9 +122,8 @@ func Run(cfg *config.Config, opts Options) error {
 				return nil, err
 			}
 			if opts.LogLevel >= LogVerbose {
-				logf(LogVerbose, "confb(run): watch %q dirs:\n", t.Name)
 				for d := range ws {
-					logf(LogVerbose, "  - %s\n", d)
+					logf(LogVerbose, t.Name, "watch dir %s", d)
 				}
 			}
 
@@ -115,7 +141,6 @@ func Run(cfg *config.Config, opts Options) error {
 		if err != nil {
 			return nil, nil, err
 		}
-		// dir -> indices
 		dirToTargets := map[string][]int{}
 		global := map[string]struct{}{}
 		for i, st := range states {
@@ -138,10 +163,8 @@ func Run(cfg *config.Config, opts Options) error {
 		if strings.TrimSpace(opts.ConfigPath) == "" {
 			return nil, fmt.Errorf("SIGHUP reload requested but Options.ConfigPath is empty")
 		}
-		cfgPath := opts.ConfigPath
-		// No chdir juggling here; Run should be invoked after CLI chdir is applied.
-		logf(LogNormal, "confb(run): reloading config from %s\n", cfgPath)
-		newCfg, err := config.Load(cfgPath)
+		logf(LogNormal, "", "reloading config from %s", opts.ConfigPath)
+		newCfg, err := config.Load(opts.ConfigPath)
 		if err != nil {
 			return nil, err
 		}
@@ -170,45 +193,46 @@ func Run(cfg *config.Config, opts Options) error {
 	var mu sync.Mutex
 	timers := make([]*time.Timer, len(states))
 
-	// helpers tied to current states
 	flush := func(idx int) {
 		st := states[idx]
 		t := st.target
 
 		rt, err := plan.PlanTarget(cfg, t, "")
 		if err != nil {
-			logf(LogNormal, "confb(run): plan error %q: %v\n", t.Name, err)
+			logf(LogNormal, t.Name, "plan error: %v", err)
 			return
 		}
 
 		content, checksum, merged, err := buildContentAndChecksum(t, rt.Files)
 		if err != nil {
-			logf(LogNormal, "confb(run): build error %q: %v\n", t.Name, err)
+			logf(LogNormal, t.Name, "build error: %v", err)
 			return
 		}
 
 		if checksum == st.lastSum {
-			logf(LogVerbose, "confb(run): %q unchanged (sha=%s)\n", t.Name, checksum)
+			logf(LogVerbose, t.Name, "unchanged (sha=%s)", checksum)
 			return
 		}
 
-		logf(LogNormal, "confb(run): %q changed, rebuilding...\n", t.Name)
+		logf(LogNormal, t.Name, "changed, rebuilding...")
 		if merged {
 			if err := executor.WriteAtomic(rt.Output, content); err != nil {
-				logf(LogNormal, "confb(run): write error %q: %v\n", t.Name, err)
+				logf(LogNormal, t.Name, "write error: %v", err)
 				return
 			}
 		} else {
 			if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
-				logf(LogNormal, "confb(run): write error %q: %v\n", t.Name, err)
+				logf(LogNormal, t.Name, "write error: %v", err)
 				return
 			}
 		}
 		st.lastSum = checksum
-		logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
+		logf(LogNormal, t.Name, "wrote %s", rt.Output)
 
 		if strings.TrimSpace(t.OnChange) != "" {
-			runOnChange(t, rt.Output, logf, opts.LogLevel)
+			runOnChange(t, rt.Output, func(level LogLevel, msg string) {
+				logf(level, t.Name, msg)
+			}, opts.LogLevel)
 		}
 	}
 
@@ -219,13 +243,12 @@ func Run(cfg *config.Config, opts Options) error {
 			return nil
 
 		case err := <-w.Errors:
-			logf(LogNormal, "confb(run): watcher error: %v\n", err)
+			logf(LogNormal, "", "watcher error: %v", err)
 
 		case ev := <-w.Events:
 			evDir := filepath.Dir(ev.Name)
 			indices := dirToTargets[evDir]
-			logf(LogVerbose, "confb(run): fs %s %s -> %d target(s)\n",
-				ev.Op.String(), ev.Name, len(indices))
+			logf(LogVerbose, "", "fs %s %s -> %d target(s)", ev.Op.String(), ev.Name, len(indices))
 			for _, idx := range indices {
 				mu.Lock()
 				if idx >= len(timers) {
@@ -247,15 +270,14 @@ func Run(cfg *config.Config, opts Options) error {
 		case s := <-sigc:
 			switch s {
 			case syscall.SIGINT, syscall.SIGTERM:
-				logf(LogNormal, "confb(run): received %v, exiting\n", s)
+				logf(LogNormal, "", "received %v, exiting", s)
 				cancel()
 				return nil
 
 			case syscall.SIGHUP:
-				// Reload: stop timers, rebuild config, states, watcher & routing
-				logf(LogNormal, "confb(run): received SIGHUP, reloading configuration\n")
+				logf(LogNormal, "", "received SIGHUP, reloading")
 
-				// Guard: stop all timers
+				// stop timers
 				mu.Lock()
 				for i := range timers {
 					if timers[i] != nil {
@@ -267,23 +289,23 @@ func Run(cfg *config.Config, opts Options) error {
 
 				newCfg, err := reloadConfig()
 				if err != nil {
-					logf(LogNormal, "confb(run): reload error: %v (keeping old config)\n", err)
+					logf(LogNormal, "", "reload error: %v (keeping old config)", err)
 					continue
 				}
 
 				newStates, err := buildStates(newCfg)
 				if err != nil {
-					logf(LogNormal, "confb(run): reload build error: %v (keeping old config)\n", err)
+					logf(LogNormal, "", "reload build error: %v (keeping old config)", err)
 					continue
 				}
 
 				newWatcher, newDirToTargets, err := buildWatcher(newStates)
 				if err != nil {
-					logf(LogNormal, "confb(run): reload watcher error: %v (keeping old config)\n", err)
+					logf(LogNormal, "", "reload watcher error: %v (keeping old config)", err)
 					continue
 				}
 
-				// Swap in new state atomically
+				// swap
 				_ = w.Close()
 				w = newWatcher
 				dirToTargets = newDirToTargets
@@ -291,7 +313,7 @@ func Run(cfg *config.Config, opts Options) error {
 				cfg = newCfg
 				timers = make([]*time.Timer, len(states))
 
-				logf(LogNormal, "confb(run): reload complete (%d targets)\n", len(states))
+				logf(LogNormal, "", "reload complete (%d targets)", len(states))
 			}
 		}
 	}
@@ -318,7 +340,7 @@ func buildContentAndChecksum(t config.Target, files []string) (string, string, b
 			content, err = blend.BlendINI(t.Merge.Rules, files)
 		}
 		if err != nil {
-			return "", "", false, err
+		 return "", "", false, err
 		}
 		sum := sha256Hex(content)
 		return content, sum, true, nil
@@ -367,7 +389,7 @@ func expandTilde(p string) string {
 
 // --- on_change hook ---
 
-func runOnChange(t config.Target, outputPath string, logf func(LogLevel, string, ...any), level LogLevel) {
+func runOnChange(t config.Target, outputPath string, logf func(LogLevel, string), level LogLevel) {
 	cmdTmpl := strings.TrimSpace(t.OnChange)
 	if cmdTmpl == "" {
 		return
@@ -382,7 +404,7 @@ func runOnChange(t config.Target, outputPath string, logf func(LogLevel, string,
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	logf(LogNormal, "confb(run): running on_change: %s\n", cmdStr)
+	logf(LogNormal, fmt.Sprintf("running on_change: %s", cmdStr))
 	c := exec.CommandContext(ctx, "/bin/sh", "-c", cmdStr)
 	c.Env = append(os.Environ(),
 		"CONFB_TARGET="+t.Name,
@@ -393,6 +415,6 @@ func runOnChange(t config.Target, outputPath string, logf func(LogLevel, string,
 	c.Stderr = os.Stderr
 
 	if err := c.Run(); err != nil {
-		logf(LogNormal, "confb(run): on_change error: %v\n", err)
+		logf(LogNormal, fmt.Sprintf("on_change error: %v", err))
 	}
 }
