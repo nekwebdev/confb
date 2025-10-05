@@ -65,9 +65,15 @@ esac
 
 # --- resolve version ---
 if [ -z "$VERSION" ]; then
-  api="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
-  VERSION="$($CURL -fsSL "$api" | grep -m1 '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')"
-  [ -n "$VERSION" ] || die "failed to detect latest release tag"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    # No network in dry-run; simulate a tag for display purposes.
+    VERSION="<latest>"
+    log "[dry-run] assuming VERSION=${VERSION} (no network)"
+  else
+    api="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+    VERSION="$($CURL -fsSL "$api" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]\+\)".*/\1/p' | head -n1)"
+    [ -n "$VERSION" ] || die "failed to detect latest release tag"
+  fi
 fi
 
 TARBALL="${REPO_NAME}_${VERSION}_${GOOS}_${GOARCH}.tar.gz"
@@ -87,6 +93,15 @@ cd "$TMP"
 # --- download artifacts ---
 run "$CURL -fsSLo checksums.txt '$URL_SHA'"
 run "$CURL -fsSLo '$TARBALL' '$URL_TGZ'"
+
+# >>> add this early return for dry-run <<<
+if [ "$DRY_RUN" -eq 1 ]; then
+  log "[dry-run] skipping checksum verification, extraction, and installation."
+  log "[dry-run] would install to: ${BIN_DIR}"
+  log "[dry-run] would place sample at: ${CONFIG_DIR}/confb.sample.yaml"
+  log "[dry-run] would install service at: ${UNIT_PATH}"
+  exit 0
+fi
 
 # --- verify checksum ---
 if [ "$DRY_RUN" -eq 0 ]; then
