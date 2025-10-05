@@ -23,18 +23,13 @@ jobs:
         with:
           go-version: "1.25.x"
 
-      # PREVENT go.sum churn during tests
-      - name: Download modules
-        run: go mod download all
-
-      - name: Verify workspace clean (pre-test)
-        run: git diff --exit-code
-
+      # Run tests without allowing module mutations.
       - name: Run tests (readonly modules)
         env:
           GOFLAGS: -mod=readonly
         run: go test ./...
 
+      # Ensure workspace is clean before releasing.
       - name: Verify workspace clean (pre-release)
         run: git diff --exit-code
 
@@ -46,3 +41,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
