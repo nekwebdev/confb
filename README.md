@@ -437,6 +437,16 @@ GitHub Actions (via GoReleaser) will build binaries and publish release artifact
 
 ---
 
+## 🧭 Future Plans
+
+**Upcoming (planned improvements)**
+
+- 🔏 **Release signing:** future versions may include Minisign-based signature verification for `checksums.txt`, ensuring authenticity of release tarballs in addition to integrity.
+- 🧩 **Homebrew / AUR packaging:** provide native installation paths on macOS and Linux.
+- 🪶 **Config merge strategies:** expand custom rule support (e.g., deep merge by key pattern).
+
+---
+
 ## 🧾 License
 
 GPLv3 © 2025 **nekwebdev**  
