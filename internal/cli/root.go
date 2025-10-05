@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"github.com/spf13/cobra"
 )
 
@@ -31,13 +32,32 @@ Typical workflow:
 	cmd.PersistentFlags().StringP("chdir", "C", "",
 		"change working directory before reading the config")
 
-	// attach subcommands
-	cmd.AddCommand(newBuildCmd())
-  cmd.AddCommand(newRunCmd()) // register daemon
-  cmd.AddCommand(newValidateCmd())
-  cmd.AddCommand(generateManCmd(cmd))
-  cmd.AddCommand(newCompletionCmd(cmd))
+	// Show "confb version <ver>" for --version
+  cmd.SetVersionTemplate("confb version {{.Version}}\n")
 	
+	cmd.AddCommand(&cobra.Command{
+    Use:   "version",
+    Short: "Show version information",
+    Run: func(_ *cobra.Command, _ []string) {
+        fmt.Printf("confb version %s\n", version)
+    },
+	})
+
+	// attach subcommands
+	cmd.AddCommand(
+		newBuildCmd(),
+    newRunCmd(),
+		newValidateCmd(),
+		generateManCmd(cmd),
+		newCompletionCmd(cmd),
+	) 
+
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+
+	cmd.Run = func(cmd *cobra.Command, args []string) {
+		fmt.Printf("confb version %s\n", version)
+	}
+
 	return cmd
 }
-
