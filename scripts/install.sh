@@ -153,6 +153,23 @@ for f in "$TMP"/man1/*.1; do
 done
 log "installed man pages to $MAN_DIR (try: man confb, man confb-build)"
 
+# --- install shell completions (best-effort) ---
+# Bash
+BASH_DIR="${BASH_COMPLETION_USER_DIR:-$HOME/.local/share/bash-completion/completions}"
+mkdir -p "$BASH_DIR"
+"${BIN_DIR}/confb" completion bash > "${BASH_DIR}/confb" || true
+
+# Zsh
+ZSH_DIR="$HOME/.local/share/zsh/site-functions"
+mkdir -p "$ZSH_DIR"
+"${BIN_DIR}/confb" completion zsh > "${ZSH_DIR}/_confb" || true
+# Note for users: ensure fpath contains $HOME/.local/share/zsh/site-functions and compinit has run.
+
+# Fish
+FISH_DIR="$HOME/.config/fish/completions"
+mkdir -p "$FISH_DIR"
+"${BIN_DIR}/confb" completion fish > "${FISH_DIR}/confb.fish" || true
+
 # --- systemd user service ---
 if [ "$INSTALL_SYSTEMD" -eq 1 ]; then
   if command -v systemctl >/dev/null 2>&1; then
@@ -206,5 +223,10 @@ Next steps:
   3. (Optional) To autostart it in a desktop session without systemd:
        Add this line to your startup script:
          ${BIN_DIR}/confb run -c ${CONFIG_DIR}/confb.yaml &
+
+Completions:
+  Bash:  ${BASH_DIR}/confb  (restart your shell)
+  Zsh:   ${ZSH_DIR}/_confb  (ensure 'fpath+=${ZSH_DIR}'; then 'autoload -U compinit && compinit')
+  Fish:  ${FISH_DIR}/confb.fish
 
 EOF

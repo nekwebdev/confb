@@ -36,7 +36,8 @@ Typical workflow:
   cmd.AddCommand(newRunCmd()) // register daemon
   cmd.AddCommand(newValidateCmd())
   cmd.AddCommand(generateManCmd(cmd))
-
+  cmd.AddCommand(newCompletionCmd(cmd))
+	
 	return cmd
 }
 
