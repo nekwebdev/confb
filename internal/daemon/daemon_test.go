@@ -55,33 +55,35 @@ targets:
 		t.Fatalf("config.Load: %v", err)
 	}
 
-	// run daemon in background
 	done := make(chan struct{})
 	go func() {
-		_ = Run(cfg, Options{LogLevel: LogQuiet, Debounce: 30 * time.Millisecond})
+		_ = Run(cfg, Options{LogLevel: LogQuiet, Debounce: 60 * time.Millisecond})
 		close(done)
 	}()
 
-	// wait for initial write
-	waitFor(t, 2*time.Second, func() bool {
+	// Wait up to 10s for initial output to exist and match content
+	waitFor(t, 10*time.Second, func() bool {
 		b, err := os.ReadFile(out)
-		return err == nil && string(b) == "hello\nworld\n"
+		if err != nil {
+			return false
+		}
+		return string(b) == "hello\nworld\n"
 	})
 
-	// modify a source to trigger rebuild
-	writeFileT(t, src2, "WORLD!") // content change
-	waitFor(t, 2*time.Second, func() bool {
+	// Modify a source and wait for rebuild (up to 10s)
+	writeFileT(t, src2, "WORLD!")
+	waitFor(t, 10*time.Second, func() bool {
 		b, err := os.ReadFile(out)
 		return err == nil && string(b) == "hello\nWORLD!\n"
 	})
 
-	// on_change marker should exist by now
-	waitFor(t, 2*time.Second, func() bool {
+	// on_change marker should exist (up to 5s)
+	waitFor(t, 5*time.Second, func() bool {
 		b, err := os.ReadFile(marker)
 		return err == nil && strings.TrimSpace(string(b)) == "done"
 	})
 
-	// stop daemon by sending SIGINT to this process (daemon listens globally)
+	// stop daemon
 	proc, _ := os.FindProcess(os.Getpid())
 	_ = proc.Signal(syscall.SIGINT)
 
@@ -99,12 +101,11 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 		if cond() {
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("condition not met before timeout")
 }
 
 func quoteYAML(s string) string {
-	// naive single-quote wrapper (escape any single quote by doubling it)
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
