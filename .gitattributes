@@ -1,0 +1,29 @@
+# Ensure consistent LF line endings across OSes
+* text=auto eol=lf
+
+# Go source: use standard diff driver
+*.go text diff=golang
+
+# YAML, TOML, KDL configs — show unified diffs as text
+*.yaml text diff
+*.yml  text diff
+*.toml text diff
+*.kdl  text diff
+
+# Makefiles, shell scripts, etc.
+Makefile text
+*.sh     text eol=lf
+*.bash   text eol=lf
+
+# Ignore binary diffs for built executables
+*.exe binary
+*.bin binary
+*.out binary
+
+# Markdown and docs
+*.md text diff
+LICENSE text
+README* text
+
+# Keep .gitignore clean diff too
+.gitignore text
