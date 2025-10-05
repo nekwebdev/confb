@@ -1,0 +1,11 @@
+version: 1
+targets:
+  - name: niri
+    format: auto
+    output: ~/.config/niri/config.test.kdl
+    sources:
+      - path: ~/.config/niri/dms/colors.kdl
+      - path: ~/.config/niri/src/*.kdl
+        sort: lex
+      - path: ~/.config/niri/testtest.kdl
+        optional: true

@@ -1,0 +1,53 @@
+# Binaries
+/bin/
+/dist/
+/build/
+/out/
+/tmp/
+/testdata/
+/coverage/
+
+# OS junk
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+desktop.ini
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Dependency & cache
+/vendor/
+/go.work
+/go.work.sum
+.idea/
+.vscode/
+*.swp
+
+# Logs & traces
+*.log
+*.trace
+*.pprof
+
+# Generated configs or user outputs
+*.confb-cache
+*.confb-lock
+*.generated
+*.tmp
+
+# Example user outputs (you might commit one sample manually)
+*.kdl
+*.yaml
+!confb.yaml        # keep your example config checked in
+
+# Local overrides
+.env
+.local/
+.secret/
