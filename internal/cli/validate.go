@@ -16,7 +16,10 @@ func newValidateCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "validate",
-		Short: "Validate confb.yaml (no build, no writes)",
+  	Short: "Validate the confb.yaml without writing outputs",
+  	Long:  "Validate parses and checks confb.yaml (globs, rules, and options) and prints any errors.",
+  	Example: `  confb validate -c ~/.config/confb/confb.yaml
+  	confb validate -c ./confb.yaml --trace`,	
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfgPath, _ := cmd.Root().Flags().GetString("config")
 			chdir, _ := cmd.Root().Flags().GetString("chdir")

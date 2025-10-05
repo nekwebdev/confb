@@ -141,6 +141,18 @@ YAML
   }
 fi
 
+# --- generate & install ALL man pages (root + subcommands) ---
+MAN_DIR="$HOME/.local/share/man/man1"
+run "mkdir -p '$MAN_DIR'"
+log "generating man pages..."
+# generate to temp, then gzip all *.1 to user's man1
+run "'${BIN_DIR}/confb' man -o '$TMP/man1'"
+for f in "$TMP"/man1/*.1; do
+  [ -f "$f" ] || continue
+  run "gzip -c '$f' > '$MAN_DIR/$(basename "$f").gz'"
+done
+log "installed man pages to $MAN_DIR (try: man confb, man confb-build)"
+
 # --- systemd user service ---
 if [ "$INSTALL_SYSTEMD" -eq 1 ]; then
   if command -v systemctl >/dev/null 2>&1; then

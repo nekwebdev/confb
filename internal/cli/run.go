@@ -20,7 +20,16 @@ func newRunCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "run",
-		Short: "Run confb as a daemon (watch files and rebuild on change)",
+  	Short: "Run the daemon: watch files and rebuild on change",
+  	Long: `Run starts a long-lived watcher:
+  	- debounced rebuilds
+  	- SIGHUP reload of the main config
+  	- per-target on_change hooks after writes
+
+	Use --quiet or --verbose to control logs.`,
+  	Example: `  confb run -c ~/.config/confb/confb.yaml --verbose
+  	# reload config live
+  	pkill -HUP confb`,	
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfgPath, _ := cmd.Root().Flags().GetString("config")
 			chdir, _ := cmd.Root().Flags().GetString("chdir")

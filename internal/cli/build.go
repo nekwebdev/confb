@@ -40,7 +40,10 @@ func newBuildCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "build",
-		Short: "Build all targets defined in confb.yaml",
+  	Short: "Build all targets once (no watch)",
+  	Long:  "Build reads confb.yaml, plans sources, merges or concatenates, and writes outputs atomically.",
+  	Example: `  confb build -c ~/.config/confb/confb.yaml
+  	confb build -c ./confb.yaml --trace`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfgPath, _ := cmd.Root().Flags().GetString("config")
 			chdir, _ := cmd.Root().Flags().GetString("chdir")
