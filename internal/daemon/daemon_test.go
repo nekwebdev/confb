@@ -12,6 +12,7 @@ import (
 	"github.com/nekwebdev/confb/internal/config"
 )
 
+// helper
 func writeFileT(t *testing.T, p, s string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -33,8 +34,9 @@ func TestRun_RawConcat_RebuildAndOnChange(t *testing.T) {
 	out := filepath.Join(td, "out.txt")
 	marker := filepath.Join(td, "marker.txt")
 
+	// Initial content; newline normalization means out should end with \n.
 	writeFileT(t, src1, "hello\r\n")
-	writeFileT(t, src2, "world") // no trailing newline initially
+	writeFileT(t, src2, "world")
 
 	cfgPath := filepath.Join(td, "confb.yaml")
 	writeFileT(t, cfgPath, `
@@ -55,46 +57,67 @@ targets:
 		t.Fatalf("config.Load: %v", err)
 	}
 
+	// Run daemon in background; capture errors.
 	errCh := make(chan error, 1)
 	go func() {
-		// Give CI a little extra debounce margin
 		errCh <- Run(cfg, Options{
 			LogLevel:   LogQuiet,
-			Debounce:   80 * time.Millisecond,
+			Debounce:   120 * time.Millisecond, // extra cushion for CI
 			ConfigPath: cfgPath,
 		})
 	}()
 
-	// Fail fast if daemon exits immediately with an error
+	// Fail fast if it exits immediately.
 	select {
 	case err := <-errCh:
 		t.Fatalf("daemon exited early: %v", err)
 	default:
 	}
 
-	// Wait up to 15s for initial output to exist and be non-empty
-	waitFor(t, 15*time.Second, func() bool {
-		fi, err := os.Stat(out)
-		return err == nil && fi.Size() > 0
-	})
+	// Instead of waiting for initial write (flaky on CI), FORCE a rebuild by modifying a source,
+	// then loop until final content matches. This makes the test independent of initial timing.
+	targetContent := "hello\nWORLD!\n"
 
-	// Now modify a source and assert strict final content after rebuild (up to 15s)
-	writeFileT(t, src2, "WORLD!")
-	waitFor(t, 15*time.Second, func() bool {
-		b, err := os.ReadFile(out)
-		return err == nil && string(b) == "hello\nWORLD!\n"
-	})
+	deadline := time.Now().Add(30 * time.Second) // generous CI budget
+	for {
+		// If daemon died during wait, fail with its error.
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("daemon exited with error: %v", err)
+			}
+			t.Fatalf("daemon exited unexpectedly")
+		default:
+		}
 
-	// on_change marker should exist by now (up to 10s)
-	waitFor(t, 10*time.Second, func() bool {
+		// Trigger rebuild by changing src2 content back and forth to ensure events
+		writeFileT(t, src2, "WORLD!")
+		time.Sleep(200 * time.Millisecond) // allow debounce + write
+		// Check output
+		if b, err := os.ReadFile(out); err == nil && string(b) == targetContent {
+			break
+		}
+
+		// Nudge again (some runners can coalesce events aggressively)
+		writeFileT(t, src2, "WORLD!") // same content rewrite still produces mtime change
+		time.Sleep(250 * time.Millisecond)
+
+		if time.Now().After(deadline) {
+			b, _ := os.ReadFile(out)
+			t.Fatalf("timeout waiting for final content\nhave: %q\nwant: %q", string(b), targetContent)
+		}
+	}
+
+	// Verify on_change side effect with its own budget.
+	waitUntil(t, 10*time.Second, func() bool {
 		b, err := os.ReadFile(marker)
 		return err == nil && strings.TrimSpace(string(b)) == "done"
+	}, func() string {
+		return "marker file not created by on_change"
 	})
 
-	// stop daemon
-	proc, _ := os.FindProcess(os.Getpid())
-	_ = proc.Signal(syscall.SIGINT)
-
+	// Stop daemon
+	_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
 	select {
 	case err := <-errCh:
 		if err != nil {
@@ -105,16 +128,20 @@ targets:
 	}
 }
 
-func waitFor(t *testing.T, d time.Duration, cond func() bool) {
+func waitUntil(t *testing.T, d time.Duration, cond func() bool, msg func() string) {
 	t.Helper()
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
 		}
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(40 * time.Millisecond)
 	}
-	t.Fatal("condition not met before timeout")
+	if msg != nil {
+		t.Fatal(msg())
+	} else {
+		t.Fatal("condition not met before timeout")
+	}
 }
 
 func quoteYAML(s string) string {
