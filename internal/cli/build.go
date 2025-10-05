@@ -101,7 +101,7 @@ func newBuildCmd() *cobra.Command {
 				}
 
 				format := strings.ToLower(t.Format)
-				doMerge := t.Merge != nil && (format == "yaml" || format == "json" || format == "kdl")
+				doMerge := t.Merge != nil && (format == "yaml" || format == "json" || format == "kdl" || format == "toml" || format == "ini")
 
 				if dryRun {
 					if doMerge {
@@ -115,11 +115,13 @@ func newBuildCmd() *cobra.Command {
     			var content string
     			var err error
     			switch format {
-    				case "yaml", "json":
+    				case "yaml", "json", "toml":
     		    	content, err = blend.BlendStructured(format, t.Merge.Rules, rt.Files)
     				case "kdl":
       		  	content, err = blend.BlendKDL(t.Merge.Rules, rt.Files)
-   					default:
+   					case "ini":
+    					content, err = blend.BlendINI(t.Merge.Rules, rt.Files)
+						default:
         			err = fmt.Errorf("unsupported merge format %q", format)
     			}
    				if err != nil {
