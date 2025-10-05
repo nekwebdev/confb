@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -65,28 +66,28 @@ func Run(cfg *config.Config, opts Options) error {
 			return err
 		}
 
-		// build merged (or concatenated) content + checksum, and write if needed
 		content, checksum, merged, err := buildContentAndChecksum(t, rt.Files)
 		if err != nil {
 			return fmt.Errorf("initial build %q: %w", t.Name, err)
 		}
 
-		// Write output if we have merged content (we control the bytes),
-		// otherwise for concat path we use BuildAndWrite to construct content identically.
 		if merged {
 			if err := executor.WriteAtomic(rt.Output, content); err != nil {
 				return err
 			}
 			logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
 		} else {
-			// concat path: BuildAndWrite internally re-generates exactly what we hashed
 			if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
 				return err
 			}
 			logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
 		}
 
-		// compute and record watch set
+		// run on_change if configured
+		if strings.TrimSpace(t.OnChange) != "" {
+			runOnChange(t, rt.Output, logf, opts.LogLevel)
+		}
+
 		ws, err := computeWatchDirs(cfg, t)
 		if err != nil {
 			return err
@@ -144,7 +145,6 @@ func Run(cfg *config.Config, opts Options) error {
 		}
 	}
 
-	// rebuild one target if output content changed
 	flush := func(idx int) {
 		st := states[idx]
 		t := st.target
@@ -180,6 +180,11 @@ func Run(cfg *config.Config, opts Options) error {
 		}
 		st.lastSum = checksum
 		logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
+
+		// run on_change if configured
+		if strings.TrimSpace(t.OnChange) != "" {
+			runOnChange(t, rt.Output, logf, opts.LogLevel)
+		}
 	}
 
 	// event loop
@@ -286,4 +291,38 @@ func expandTilde(p string) string {
 		}
 	}
 	return p
+}
+
+// --- on_change hook ---
+
+func runOnChange(t config.Target, outputPath string, logf func(LogLevel, string, ...any), level LogLevel) {
+	cmdTmpl := strings.TrimSpace(t.OnChange)
+	if cmdTmpl == "" {
+		return
+	}
+	// template vars
+	cmdStr := cmdTmpl
+	cmdStr = strings.ReplaceAll(cmdStr, "{target}", t.Name)
+	cmdStr = strings.ReplaceAll(cmdStr, "{output}", outputPath)
+	cmdStr = strings.ReplaceAll(cmdStr, "{timestamp}", time.Now().Format(time.RFC3339))
+
+	// best-effort timeout to avoid wedging the daemon
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	logf(LogNormal, "confb(run): running on_change: %s\n", cmdStr)
+	c := exec.CommandContext(ctx, "/bin/sh", "-c", cmdStr)
+	// inherit environment + useful extras
+	c.Env = append(os.Environ(),
+		"CONFB_TARGET="+t.Name,
+		"CONFB_OUTPUT="+outputPath,
+		"CONFB_TIMESTAMP="+time.Now().Format(time.RFC3339),
+	)
+	// stream to our stderr unless we're quiet; even in quiet, errors still go out via LogNormal
+	c.Stdout = os.Stderr
+	c.Stderr = os.Stderr
+
+	if err := c.Run(); err != nil {
+		logf(LogNormal, "confb(run): on_change error: %v\n", err)
+	}
 }

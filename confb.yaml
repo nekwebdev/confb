@@ -23,6 +23,8 @@ targets:
       rules:
         maps: deep
         arrays: unique_append
+    on_change: |
+      notify-send "confb" "rebuilt {target} -> {output} @ {timestamp}"
   - name: test_toml
     format: toml
     output: ../testdata/merged.toml

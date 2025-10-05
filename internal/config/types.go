@@ -20,6 +20,7 @@ type Target struct {
 	Newline  string     `yaml:"newline"`  // "\n" only in MVP
 	Encoding string     `yaml:"encoding"` // utf8 only in MVP
 	Merge    *MergeSpec `yaml:"merge,omitempty"` // optional; enables format-aware merging later
+	OnChange string     `yaml:"on_change,omitempty"` // optional; shell command to run after successful write
 }
 
 // A source entry (file path or glob), with options
