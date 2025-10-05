@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nekwebdev/confb/internal/blend"
 	"github.com/nekwebdev/confb/internal/config"
 	executor "github.com/nekwebdev/confb/internal/exec"
 	"github.com/nekwebdev/confb/internal/plan"
@@ -35,7 +36,6 @@ func parseOverrides(pairs []string) (map[string]string, error) {
 func newBuildCmd() *cobra.Command {
 	var trace bool
 	var dryRun bool
-	var traceChecksums bool
 	var overridesFlag []string
 
 	cmd := &cobra.Command{
@@ -100,25 +100,33 @@ func newBuildCmd() *cobra.Command {
 					}
 				}
 
-				// optional checksum trace
-				if traceChecksums {
-					sum, err := executor.SHA256OfFiles(rt.Files)
-					if err != nil {
-						return fmt.Errorf("%s: checksum: %w", rt.Name, err)
-					}
-					fmt.Fprintf(os.Stderr, "  sha256(blended inputs): %s\n", sum)
-				}
+				format := strings.ToLower(t.Format)
+				doMerge := t.Merge != nil && (format == "yaml" || format == "json")
 
 				if dryRun {
-					fmt.Fprintf(os.Stderr, "  action: dry-run (no write)\n")
+					if doMerge {
+						fmt.Fprintf(os.Stderr, "  action: dry-run (merge: %s/%s)\n", format, mergeSummary(t.Merge.Rules))
+					} else {
+						fmt.Fprintf(os.Stderr, "  action: dry-run (concat)\n")
+					}
 					continue
 				}
 
-				// do the write atomically
-				if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
-					return err
+				if doMerge {
+					content, err := blend.BlendStructured(format, t.Merge.Rules, rt.Files)
+					if err != nil {
+						return fmt.Errorf("%s: merge: %w", rt.Name, err)
+					}
+					if err := executor.WriteAtomic(rt.Output, content); err != nil {
+						return err
+					}
+					fmt.Fprintf(os.Stderr, "  action: merged (%s) -> wrote %s\n", format, rt.Output)
+				} else {
+					if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
+						return err
+					}
+					fmt.Fprintf(os.Stderr, "  action: wrote %s\n", rt.Output)
 				}
-				fmt.Fprintf(os.Stderr, "  action: wrote %s\n", rt.Output)
 			}
 
 			return nil
@@ -128,8 +136,21 @@ func newBuildCmd() *cobra.Command {
 	// flags for build
 	cmd.Flags().BoolVar(&trace, "trace", false, "print resolved baseDir and config details")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "validate and plan only; do not write outputs")
-	cmd.Flags().BoolVar(&traceChecksums, "trace-checksums", false, "compute and print SHA-256 of blended inputs")
 	cmd.Flags().StringArrayVar(&overridesFlag, "output-override", nil, "override TARGET=PATH (repeatable)")
 
 	return cmd
+}
+
+func mergeSummary(r *config.MergeRules) string {
+	if r == nil {
+		return ""
+	}
+	var parts []string
+	if r.Maps != "" {
+		parts = append(parts, "maps="+strings.ToLower(r.Maps))
+	}
+	if r.Arrays != "" {
+		parts = append(parts, "arrays="+strings.ToLower(r.Arrays))
+	}
+	return strings.Join(parts, ",")
 }

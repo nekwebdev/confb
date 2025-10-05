@@ -1,7 +1,7 @@
 version: 1
 targets:
   - name: niri
-    format: auto
+    format: kdl
     output: ~/.config/niri/config.test.kdl
     sources:
       - path: ~/.config/niri/dms/colors.kdl
@@ -9,3 +9,17 @@ targets:
         sort: lex
       - path: ~/.config/niri/testtest.kdl
         optional: true
+    merge:
+      rules:
+        key: last_wins
+        section_keys: ["layout"]
+  - name: test_yaml
+    format: yaml
+    output: ../testdata/merged.yaml
+    sources:
+      - path: ../testdata/base.yaml
+      - path: ../testdata/overlay.yaml
+    merge:
+      rules:
+        maps: deep
+        arrays: unique_append

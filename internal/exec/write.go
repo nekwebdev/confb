@@ -13,12 +13,17 @@ import (
 )
 
 // BuildAndWrite concatenates files -> normalized string -> atomic write.
+// (Used when no merge is requested.)
 func BuildAndWrite(outputPath string, files []string) error {
-	// read + normalize
 	content, err := readAndNormalize(files)
 	if err != nil {
 		return err
 	}
+	return WriteAtomic(outputPath, content)
+}
+
+// WriteAtomic writes content to outputPath atomically (same-dir temp + fsync + rename).
+func WriteAtomic(outputPath string, content string) error {
 	// ensure parent dir exists
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir %q: %w", filepath.Dir(outputPath), err)
