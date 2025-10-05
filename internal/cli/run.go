@@ -1,9 +1,10 @@
 package cli
 
 import (
+	"time"
 	"fmt"
 	"os"
-	"time"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -18,7 +19,7 @@ func newRunCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "run",
-		Short: "Run confb as a daemon: watch sources and rebuild targets on change",
+		Short: "Run confb as a daemon (watch files and rebuild on change)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfgPath, _ := cmd.Root().Flags().GetString("config")
 			chdir, _ := cmd.Root().Flags().GetString("chdir")
@@ -37,21 +38,38 @@ func newRunCmd() *cobra.Command {
 			level := daemon.LogNormal
 			if quiet {
 				level = daemon.LogQuiet
-			} else if verbose {
+			}
+			if verbose {
 				level = daemon.LogVerbose
 			}
 
-			opts := daemon.Options{
-				LogLevel: level,
-				Debounce: time.Duration(debounceMS) * time.Millisecond,
+			absCfg := cfgPath
+			if !filepath.IsAbs(absCfg) {
+				if abs, err := filepath.Abs(absCfg); err == nil {
+					absCfg = abs
+				}
 			}
+
+			opts := daemon.Options{
+				LogLevel:   level,
+				Debounce:   msToDuration(debounceMS),
+				ConfigPath: absCfg, // so SIGHUP reload knows where to read from
+			}
+
 			return daemon.Run(cfg, opts)
 		},
 	}
 
-	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress non-error logs")
-	cmd.Flags().BoolVar(&verbose, "verbose", false, "show detailed trace logs")
-	cmd.Flags().IntVar(&debounceMS, "debounce-ms", 200, "debounce window in milliseconds")
+	cmd.Flags().BoolVar(&quiet, "quiet", false, "reduce log output")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "increase log output (debug)")
+	cmd.Flags().IntVar(&debounceMS, "debounce-ms", 200, "debounce interval for rebuilds (milliseconds)")
 
 	return cmd
+}
+
+func msToDuration(ms int) (d time.Duration) {
+	if ms <= 0 {
+		return 200 * time.Millisecond
+	}
+	return time.Duration(ms) * time.Millisecond
 }

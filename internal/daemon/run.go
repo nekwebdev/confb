@@ -32,8 +32,15 @@ const (
 )
 
 type Options struct {
-	LogLevel LogLevel
-	Debounce time.Duration
+	LogLevel   LogLevel
+	Debounce   time.Duration
+	ConfigPath string // ABS or relative; used for SIGHUP reload
+}
+
+type tstate struct {
+	target   config.Target
+	lastSum  string              // SHA256 hex of *final output content*
+	watchSet map[string]struct{} // dirs to watch
 }
 
 func Run(cfg *config.Config, opts Options) error {
@@ -50,101 +57,120 @@ func Run(cfg *config.Config, opts Options) error {
 		}
 	}
 
-	type tstate struct {
-		target   config.Target
-		lastSum  string              // SHA256 hex of *final output content*
-		watchSet map[string]struct{} // dirs to watch
-	}
-	states := make([]*tstate, 0, len(cfg.Targets))
+	// ---- helper closures ----
 
-	// initial plan + initial (conditional) write
-	for i := range cfg.Targets {
-		t := cfg.Targets[i]
+	buildStates := func(c *config.Config) ([]*tstate, error) {
+		states := make([]*tstate, 0, len(c.Targets))
+		for i := range c.Targets {
+			t := c.Targets[i]
 
-		rt, err := plan.PlanTarget(cfg, t, "")
-		if err != nil {
-			return err
-		}
-
-		content, checksum, merged, err := buildContentAndChecksum(t, rt.Files)
-		if err != nil {
-			return fmt.Errorf("initial build %q: %w", t.Name, err)
-		}
-
-		if merged {
-			if err := executor.WriteAtomic(rt.Output, content); err != nil {
-				return err
+			rt, err := plan.PlanTarget(c, t, "")
+			if err != nil {
+				return nil, err
 			}
-			logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
-		} else {
-			if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
-				return err
+
+			content, checksum, merged, err := buildContentAndChecksum(t, rt.Files)
+			if err != nil {
+				return nil, fmt.Errorf("initial build %q: %w", t.Name, err)
 			}
-			logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
-		}
 
-		// run on_change if configured
-		if strings.TrimSpace(t.OnChange) != "" {
-			runOnChange(t, rt.Output, logf, opts.LogLevel)
-		}
-
-		ws, err := computeWatchDirs(cfg, t)
-		if err != nil {
-			return err
-		}
-		if opts.LogLevel >= LogVerbose {
-			logf(LogVerbose, "confb(run): watch %q dirs:\n", t.Name)
-			for d := range ws {
-				logf(LogVerbose, "  - %s\n", d)
+			if merged {
+				if err := executor.WriteAtomic(rt.Output, content); err != nil {
+					return nil, err
+				}
+				logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
+			} else {
+				if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
+					return nil, err
+				}
+				logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
 			}
-		}
 
-		states = append(states, &tstate{
-			target:   t,
-			lastSum:  checksum,
-			watchSet: ws,
-		})
+			if strings.TrimSpace(t.OnChange) != "" {
+				runOnChange(t, rt.Output, logf, opts.LogLevel)
+			}
+
+			ws, err := computeWatchDirs(c, t)
+			if err != nil {
+				return nil, err
+			}
+			if opts.LogLevel >= LogVerbose {
+				logf(LogVerbose, "confb(run): watch %q dirs:\n", t.Name)
+				for d := range ws {
+					logf(LogVerbose, "  - %s\n", d)
+				}
+			}
+
+			states = append(states, &tstate{
+				target:   t,
+				lastSum:  checksum,
+				watchSet: ws,
+			})
+		}
+		return states, nil
 	}
 
-	// watcher covering all source dirs
-	w, err := fsnotify.NewWatcher()
+	buildWatcher := func(states []*tstate) (*fsnotify.Watcher, map[string][]int, error) {
+		w, err := fsnotify.NewWatcher()
+		if err != nil {
+			return nil, nil, err
+		}
+		// dir -> indices
+		dirToTargets := map[string][]int{}
+		global := map[string]struct{}{}
+		for i, st := range states {
+			for d := range st.watchSet {
+				global[d] = struct{}{}
+				dirToTargets[d] = append(dirToTargets[d], i)
+			}
+		}
+		for d := range global {
+			_ = os.MkdirAll(d, 0o755)
+			if err := w.Add(d); err != nil {
+				_ = w.Close()
+				return nil, nil, fmt.Errorf("watch add %q: %w", d, err)
+			}
+		}
+		return w, dirToTargets, nil
+	}
+
+	reloadConfig := func() (*config.Config, error) {
+		if strings.TrimSpace(opts.ConfigPath) == "" {
+			return nil, fmt.Errorf("SIGHUP reload requested but Options.ConfigPath is empty")
+		}
+		cfgPath := opts.ConfigPath
+		// No chdir juggling here; Run should be invoked after CLI chdir is applied.
+		logf(LogNormal, "confb(run): reloading config from %s\n", cfgPath)
+		newCfg, err := config.Load(cfgPath)
+		if err != nil {
+			return nil, err
+		}
+		return newCfg, nil
+	}
+
+	// ---- initial build & watcher ----
+	states, err := buildStates(cfg)
+	if err != nil {
+		return err
+	}
+	w, dirToTargets, err := buildWatcher(states)
 	if err != nil {
 		return err
 	}
 	defer w.Close()
 
-	global := map[string]struct{}{}
-	for _, st := range states {
-		for d := range st.watchSet {
-			global[d] = struct{}{}
-		}
-	}
-	for d := range global {
-		_ = os.MkdirAll(d, 0o755)
-		if err := w.Add(d); err != nil {
-			return fmt.Errorf("watch add %q: %w", d, err)
-		}
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// signals
+	// signals: INT/TERM for exit; HUP for reload
 	sigc := make(chan os.Signal, 2)
-	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	// debounce machinery
 	var mu sync.Mutex
 	timers := make([]*time.Timer, len(states))
 
-	// dir -> target indices
-	dirToTargets := map[string][]int{}
-	for i, st := range states {
-		for d := range st.watchSet {
-			dirToTargets[d] = append(dirToTargets[d], i)
-		}
-	}
-
+	// helpers tied to current states
 	flush := func(idx int) {
 		st := states[idx]
 		t := st.target
@@ -181,47 +207,94 @@ func Run(cfg *config.Config, opts Options) error {
 		st.lastSum = checksum
 		logf(LogNormal, "confb(run): wrote %s\n", rt.Output)
 
-		// run on_change if configured
 		if strings.TrimSpace(t.OnChange) != "" {
 			runOnChange(t, rt.Output, logf, opts.LogLevel)
 		}
 	}
 
 	// event loop
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case err := <-w.Errors:
-				logf(LogNormal, "confb(run): watcher error: %v\n", err)
-			case ev := <-w.Events:
-				evDir := filepath.Dir(ev.Name)
-				indices := dirToTargets[evDir]
-				logf(LogVerbose, "confb(run): fs %s %s -> %d target(s)\n",
-					ev.Op.String(), ev.Name, len(indices))
-				for _, idx := range indices {
-					mu.Lock()
-					if timers[idx] != nil {
-						timers[idx].Stop()
-					}
-					i := idx
-					timers[i] = time.AfterFunc(opts.Debounce, func() {
-						mu.Lock()
-						mu.Unlock()
-						flush(i)
-					})
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+
+		case err := <-w.Errors:
+			logf(LogNormal, "confb(run): watcher error: %v\n", err)
+
+		case ev := <-w.Events:
+			evDir := filepath.Dir(ev.Name)
+			indices := dirToTargets[evDir]
+			logf(LogVerbose, "confb(run): fs %s %s -> %d target(s)\n",
+				ev.Op.String(), ev.Name, len(indices))
+			for _, idx := range indices {
+				mu.Lock()
+				if idx >= len(timers) {
 					mu.Unlock()
+					continue
 				}
+				if timers[idx] != nil {
+					timers[idx].Stop()
+				}
+				i := idx
+				timers[i] = time.AfterFunc(opts.Debounce, func() {
+					mu.Lock()
+					mu.Unlock()
+					flush(i)
+				})
+				mu.Unlock()
+			}
+
+		case s := <-sigc:
+			switch s {
+			case syscall.SIGINT, syscall.SIGTERM:
+				logf(LogNormal, "confb(run): received %v, exiting\n", s)
+				cancel()
+				return nil
+
+			case syscall.SIGHUP:
+				// Reload: stop timers, rebuild config, states, watcher & routing
+				logf(LogNormal, "confb(run): received SIGHUP, reloading configuration\n")
+
+				// Guard: stop all timers
+				mu.Lock()
+				for i := range timers {
+					if timers[i] != nil {
+						timers[i].Stop()
+						timers[i] = nil
+					}
+				}
+				mu.Unlock()
+
+				newCfg, err := reloadConfig()
+				if err != nil {
+					logf(LogNormal, "confb(run): reload error: %v (keeping old config)\n", err)
+					continue
+				}
+
+				newStates, err := buildStates(newCfg)
+				if err != nil {
+					logf(LogNormal, "confb(run): reload build error: %v (keeping old config)\n", err)
+					continue
+				}
+
+				newWatcher, newDirToTargets, err := buildWatcher(newStates)
+				if err != nil {
+					logf(LogNormal, "confb(run): reload watcher error: %v (keeping old config)\n", err)
+					continue
+				}
+
+				// Swap in new state atomically
+				_ = w.Close()
+				w = newWatcher
+				dirToTargets = newDirToTargets
+				states = newStates
+				cfg = newCfg
+				timers = make([]*time.Timer, len(states))
+
+				logf(LogNormal, "confb(run): reload complete (%d targets)\n", len(states))
 			}
 		}
-	}()
-
-	// wait for signal
-	s := <-sigc
-	logf(LogNormal, "confb(run): received %v, exiting\n", s)
-	cancel()
-	return nil
+	}
 }
 
 // buildContentAndChecksum builds the final output content (for merged formats),
@@ -264,7 +337,6 @@ func sha256Hex(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// computeWatchDirs: watch the dir of each explicit file and the dir part of each glob.
 func computeWatchDirs(cfg *config.Config, t config.Target) (map[string]struct{}, error) {
 	baseDir, err := cfg.BaseDir()
 	if err != nil {
@@ -312,13 +384,11 @@ func runOnChange(t config.Target, outputPath string, logf func(LogLevel, string,
 
 	logf(LogNormal, "confb(run): running on_change: %s\n", cmdStr)
 	c := exec.CommandContext(ctx, "/bin/sh", "-c", cmdStr)
-	// inherit environment + useful extras
 	c.Env = append(os.Environ(),
 		"CONFB_TARGET="+t.Name,
 		"CONFB_OUTPUT="+outputPath,
 		"CONFB_TIMESTAMP="+time.Now().Format(time.RFC3339),
 	)
-	// stream to our stderr unless we're quiet; even in quiet, errors still go out via LogNormal
 	c.Stdout = os.Stderr
 	c.Stderr = os.Stderr
 
