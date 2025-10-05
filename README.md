@@ -189,6 +189,93 @@ cd confb
 make build
 install -m 755 bin/confb ~/.local/bin/
 ```
+---
+
+## 🧹 Maintenance
+
+### Uninstall
+
+To safely remove **confb**, its man pages, completions, and optional service unit:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nekwebdev/confb/main/scripts/uninstall.sh | bash
+```
+
+Or, if already cloned:
+
+```bash
+./scripts/uninstall.sh
+```
+
+Options:
+- `--dry-run` → show what would be removed without deleting
+- `--purge` → also delete your `~/.config/confb` directory (user configs)
+
+The uninstall script is **idempotent** and can be run multiple times safely.
+
+---
+
+### Shell Completions
+
+`confb` provides completions for **Bash**, **Zsh**, **Fish**, and **PowerShell**.
+These are automatically installed by the setup script, but you can regenerate them manually:
+
+```bash
+confb completion bash > ~/.local/share/bash-completion/completions/confb
+confb completion zsh > ~/.local/share/zsh/site-functions/_confb
+confb completion fish > ~/.config/fish/completions/confb.fish
+```
+
+Reload your shell or run:
+```bash
+source ~/.local/share/bash-completion/completions/confb
+autoload -U compinit && compinit   # Zsh
+```
+
+---
+
+### Man Pages
+
+The installer automatically generates and installs full manual pages under:
+```
+~/.local/share/man/man1/
+```
+
+Available entries include:
+```
+man confb
+man confb-build
+man confb-run
+man confb-validate
+man confb-completion
+```
+
+If you installed manually or want to refresh them:
+```bash
+confb man -o ~/.local/share/man/man1
+gzip -f ~/.local/share/man/man1/confb*.1
+```
+
+---
+
+### Systemd Service
+
+After editing your configuration in `~/.config/confb/confb.yaml`,
+enable the user service so it runs automatically in the background:
+
+```bash
+systemctl --user enable --now confb.service
+```
+
+To stop or reload:
+```bash
+systemctl --user stop confb.service
+systemctl --user reload confb.service
+```
+
+---
+
+🪄 **Tip:** Combine completions + man pages for a full native CLI experience on Linux.
 
 ---
 
