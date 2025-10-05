@@ -1,5 +1,5 @@
 ---
-layout: cocoa
+layout: confb
 ---
 
 Automate configuration management with **confb**, a lightweight daemon that watches, merges, and rebuilds app configs in real time.
