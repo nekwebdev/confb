@@ -40,25 +40,22 @@ func newBuildCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "build",
-  	Short: "Build all targets once (no watch)",
-  	Long:  "Build reads confb.yaml, plans sources, merges or concatenates, and writes outputs atomically.",
-  	Example: `  confb build -c ~/.config/confb/confb.yaml
-  	confb build -c ./confb.yaml --trace`,
+		Short: "Build all targets once (no watch)",
+		Long: `Build reads the configuration file, plans sources, merges or concatenates, and writes outputs atomically.
+
+If -c/--config is not provided, confb uses:
+  ` + defaultConfigPath(),
+		Example: `  confb build
+  confb build -c ./confb.yaml
+  CONFB_CONFIG=./alt.yaml confb build --trace`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfgPath, _ := cmd.Root().Flags().GetString("config")
-			chdir, _ := cmd.Root().Flags().GetString("chdir")
-
-			// optional chdir for reproducibility
-			if chdir != "" {
-				if err := os.Chdir(chdir); err != nil {
-					return fmt.Errorf("failed to chdir to %q: %w", chdir, err)
-				}
-			}
-
-			// load and validate
-			cfg, err := config.Load(cfgPath)
+			cfgPath, err := resolveConfig(cmd)
 			if err != nil {
 				return err
+			}
+			cfg, err := config.Load(cfgPath)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
 			}
 
 			overrides, err := parseOverrides(overridesFlag)
@@ -81,7 +78,7 @@ func newBuildCmd() *cobra.Command {
 				return errors.New("no targets defined (validation should have caught this)")
 			}
 
-			// per-target planning + optional write
+			// per-target planning + write
 			for _, t := range cfg.Targets {
 				override := overrides[t.Name]
 				rt, err := plan.PlanTarget(cfg, t, override)
@@ -114,26 +111,26 @@ func newBuildCmd() *cobra.Command {
 					}
 					continue
 				}
-			  if doMerge {
-    			var content string
-    			var err error
-    			switch format {
-    				case "yaml", "json", "toml":
-    		    	content, err = blend.BlendStructured(format, t.Merge.Rules, rt.Files)
-    				case "kdl":
-      		  	content, err = blend.BlendKDL(t.Merge.Rules, rt.Files)
-   					case "ini":
-    					content, err = blend.BlendINI(t.Merge.Rules, rt.Files)
-						default:
-        			err = fmt.Errorf("unsupported merge format %q", format)
-    			}
-   				if err != nil {
-        		return fmt.Errorf("%s: merge: %w", rt.Name, err)
-    			}
-    			if err := executor.WriteAtomic(rt.Output, content); err != nil {
-        		return err
-    			}
-    			fmt.Fprintf(os.Stderr, "  action: merged (%s) -> wrote %s\n", format, rt.Output)
+
+				if doMerge {
+					var content string
+					switch format {
+					case "yaml", "json", "toml":
+						content, err = blend.BlendStructured(format, t.Merge.Rules, rt.Files)
+					case "kdl":
+						content, err = blend.BlendKDL(t.Merge.Rules, rt.Files)
+					case "ini":
+						content, err = blend.BlendINI(t.Merge.Rules, rt.Files)
+					default:
+						err = fmt.Errorf("unsupported merge format %q", format)
+					}
+					if err != nil {
+						return fmt.Errorf("%s: merge: %w", rt.Name, err)
+					}
+					if err := executor.WriteAtomic(rt.Output, content); err != nil {
+						return err
+					}
+					fmt.Fprintf(os.Stderr, "  action: merged (%s) -> wrote %s\n", format, rt.Output)
 				} else {
 					if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
 						return err

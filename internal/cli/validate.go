@@ -16,23 +16,19 @@ func newValidateCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "validate",
-  	Short: "Validate the confb.yaml without writing outputs",
-  	Long:  "Validate parses and checks confb.yaml (globs, rules, and options) and prints any errors.",
-  	Example: `  confb validate -c ~/.config/confb/confb.yaml
-  	confb validate -c ./confb.yaml --trace`,	
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfgPath, _ := cmd.Root().Flags().GetString("config")
-			chdir, _ := cmd.Root().Flags().GetString("chdir")
-
-			if chdir != "" {
-				if err := os.Chdir(chdir); err != nil {
-					return fmt.Errorf("failed to chdir to %q: %w", chdir, err)
-				}
-			}
-
-			cfg, err := config.Load(cfgPath)
+		Short: "Validate the confb.yaml without writing outputs",
+		Long:  "Validate parses and checks confb.yaml (globs, rules, and options) and prints any errors.",
+		Example: `  confb validate
+  confb validate -c ./confb.yaml
+  CONFB_CONFIG=./alt.yaml confb validate`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfgPath, err := resolveConfig(cmd)
 			if err != nil {
 				return err
+			}
+			cfg, err := config.Load(cfgPath)
+			if err != nil {
+				return fmt.Errorf("config invalid: %w", err)
 			}
 
 			if trace {
@@ -51,7 +47,6 @@ func newValidateCmd() *cobra.Command {
 				}
 			}
 
-			// success if we got here
 			fmt.Fprintln(os.Stderr, "confb: validation OK")
 			return nil
 		},

@@ -2,8 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -27,22 +25,19 @@ func newRunCmd() *cobra.Command {
   	- per-target on_change hooks after writes
 
 	Use --quiet or --verbose to control logs.`,
-  	Example: `  confb run -c ~/.config/confb/confb.yaml --verbose
+  	Example: `  confb run            # uses default config path
+	confb run -c ~/.config/confb/confb.yaml --verbose
+	CONFB_CONFIG=./alt.yaml confb run
   	# reload config live
   	pkill -HUP confb`,	
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfgPath, _ := cmd.Root().Flags().GetString("config")
-			chdir, _ := cmd.Root().Flags().GetString("chdir")
-
-			if chdir != "" {
-				if err := os.Chdir(chdir); err != nil {
-					return fmt.Errorf("failed to chdir to %q: %w", chdir, err)
-				}
-			}
-
-			cfg, err := config.Load(cfgPath)
+			cfgPath, err := resolveConfig(cmd)
 			if err != nil {
 				return err
+			}
+			cfg, err := config.Load(cfgPath)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
 			}
 
 			level := daemon.LogNormal
@@ -53,17 +48,10 @@ func newRunCmd() *cobra.Command {
 				level = daemon.LogVerbose
 			}
 
-			absCfg := cfgPath
-			if !filepath.IsAbs(absCfg) {
-				if abs, err := filepath.Abs(absCfg); err == nil {
-					absCfg = abs
-				}
-			}
-
 			opts := daemon.Options{
 				LogLevel:   level,
 				Debounce:   msToDuration(debounceMS),
-				ConfigPath: absCfg,
+				ConfigPath: cfgPath,
 				Color:      color,
 			}
 
