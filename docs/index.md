@@ -14,7 +14,7 @@ Automate configuration management with **confb**, a lightweight daemon that watc
 ## ⚙️ Install
 
 ```bash
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/nekwebdev/confb/main/scripts/install.sh)"
+curl -fsSL https://raw.githubusercontent.com/nekwebdev/confb/main/scripts/install.sh | sh
 ```
 
 Installs `confb` to `~/.local/bin`, man pages, completions, and a sample config.
@@ -29,17 +29,18 @@ Installs `confb` to `~/.local/bin`, man pages, completions, and a sample config.
    ```
 2. Build once:
    ```bash
-   confb build -c ~/.config/confb/confb.yaml
+   confb build --verbose
    ```
 3. Or run continuously:
    ```bash
-   confb run -c ~/.config/confb/confb.yaml --verbose
+   confb run
    ```
 
 Enable auto-start with:
 ```bash
 systemctl --user enable --now confb.service
 ```
+> Defaults to `~/.config/confb/confb.yaml`. Override with `-c` or `CONFB_CONFIG`.
 
 ---
 

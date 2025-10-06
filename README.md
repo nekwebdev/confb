@@ -3,23 +3,45 @@
 
 ---
 
-## ⚡ TL;DR — Quick Start
-
+## Install
 ```bash
-# install the latest release (safe, no root)
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/nekwebdev/confb/main/scripts/install.sh)"
+curl -fsSL https://raw.githubusercontent.com/nekwebdev/confb/main/scripts/install.sh | sh
+```
 
-# copy and edit your config
-cp ~/.config/confb/confb.sample.yaml ~/.config/confb/confb.yaml
-$EDITOR ~/.config/confb/confb.yaml
+This installs `confb` to `~/.local/bin`, man pages, shell completions, and a sample config at:
+```
+~/.config/confb/confb.sample.yaml
+```
+---
 
-# build once
-confb build -c ~/.config/confb/confb.yaml
+## 🚀 Quick Start
 
-# run as daemon (auto rebuild on file changes)
-confb run -c ~/.config/confb/confb.yaml --verbose
+1. Create your config:
+   ```bash
+   cp ~/.config/confb/confb.sample.yaml ~/.config/confb/confb.yaml
+   $EDITOR ~/.config/confb/confb.yaml
+   ```
 
-# reload live configuration (no restart needed)
+2. Build once:
+   ```bash
+   confb build --verbose
+   ```
+
+3. Or run continuously:
+   ```bash
+   confb run
+   ```
+
+Enable the user service at login:
+```bash
+systemctl --user enable --now confb.service
+```
+
+> 🧩 `confb` uses `~/.config/confb/confb.yaml` by default.
+> You can override this using `-c` or the environment variable `CONFB_CONFIG`.
+
+Reload live configuration (no restart needed)
+```bash
 pkill -HUP confb
 ```
 
