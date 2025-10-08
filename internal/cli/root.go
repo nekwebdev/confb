@@ -104,6 +104,7 @@ Typical workflow:
 		newValidateCmd(),
 		generateManCmd(cmd),
 		newCompletionCmd(cmd),
+		newReloadCmd(),
 	)
 
 	// default action with no subcommand: show help
