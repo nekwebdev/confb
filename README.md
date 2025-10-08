@@ -40,9 +40,9 @@ systemctl --user enable --now confb.service
 > 🧩 `confb` uses `~/.config/confb/confb.yaml` by default.
 > You can override this using `-c` or the environment variable `CONFB_CONFIG`.
 
-Reload live configuration (no restart needed)
+Reload configuration
 ```bash
-pkill -HUP confb
+confb reload
 ```
 
 ---
@@ -162,7 +162,7 @@ It can run as:
    - **INI** — append or override duplicate keys  
    - **RAW** — simple concatenation  
 ✅ Debounce rebuilds to avoid thrashing  
-✅ SIGHUP reload of main `confb.yaml`  
+✅ Config reloading  
 ✅ Per-target `on_change` hooks (e.g. reload your app)  
 ✅ Optional systemd user service integration  
 ✅ Atomic writes for safety  
@@ -390,6 +390,7 @@ Or add to your session startup:
 | `--color` | ANSI colors in log |
 | `--debounce-ms <ms>` | Rebuild delay |
 | `--config <path>` | Alt config path |
+| `confb reload` | Reloads the config |
 
 ---
 
@@ -408,15 +409,22 @@ Vars:
 
 ---
 
-## 🔄 SIGHUP Reload
+## 🔁 Reload Command
 
-Change your config on the fly:
+`confb reload` lets you trigger a config reload in the running daemon.
 
+#### Usage
 ```bash
-pkill -HUP confb
+confb reload [--pid-file PATH] [--unit confb.service] [--user] [--method auto|pid|systemd] [--trace]
 ```
 
-confb will re-parse `confb.yaml`, update watchers, and rebuild all targets.
+#### Behavior
+- Sends `SIGHUP` to the daemon by:
+  1. Reading a PID file (`~/.cache/confb/confb.pid`, `/run/user/<uid>/confb/confb.pid`, `/var/run/confb.pid`)
+  2. Or calling `systemctl kill -s HUP confb.service`
+- Automatically falls back between PID, systemd (system), and systemd --user.
+- Quiet unless `--trace` is specified.
+- Prints a single success line `(pid)`, `(systemd)`, or `(systemd --user)`.
 
 ---
 
