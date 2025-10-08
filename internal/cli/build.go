@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,16 +19,105 @@ import (
 	"github.com/nekwebdev/confb/internal/plan"
 )
 
-// parseOverrides turns ["name=/tmp/out", "other=..."] into a map.
-func parseOverrides(pairs []string) (map[string]string, error) {
-	out := make(map[string]string, len(pairs))
-	for _, p := range pairs {
-		if !strings.Contains(p, "=") {
+// commentPrefixFor returns the single-line comment prefix for a given format,
+// and whether comments are supported for that format.
+func commentPrefixFor(format string) (string, bool) {
+	switch strings.ToLower(format) {
+	case "kdl":
+		return "// ", true
+	case "toml", "yaml", "yml":
+		return "# ", true
+	case "ini":
+		return "; ", true
+	default: // json, raw, unknown
+		return "", false
+	}
+}
+
+// headerForTarget builds the annotation header to prepend to an output file.
+// It enumerates sources and merge rules, and includes version/time.
+// Returns nil if the format doesn't support comments.
+func headerForTarget(cmd *cobra.Command, t config.Target, rt *plan.ResolvedTarget) []byte {
+	prefix, ok := commentPrefixFor(t.Format)
+	if !ok {
+		return nil
+	}
+
+	var lines []string
+	lines = append(lines, "confb build")
+	if v := cmd.Root().Version; v != "" {
+		lines = append(lines, "version: "+v)
+	}
+	lines = append(lines,
+		"fmt: "+strings.ToLower(t.Format),
+		"target: "+t.Name,
+		"output: "+rt.Output,
+		"time: "+time.Now().Format(time.RFC3339),
+	)
+
+	// merge rule summary (format-aware)
+	if t.Merge != nil && t.Merge.Rules != nil {
+		r := t.Merge.Rules
+		switch strings.ToLower(t.Format) {
+		case "kdl":
+			var parts []string
+			if r.KDLKeys != "" {
+				parts = append(parts, "keys="+strings.ToLower(r.KDLKeys))
+			}
+			if len(r.KDLSectionKeys) > 0 {
+				parts = append(parts, "section_keys=["+strings.Join(r.KDLSectionKeys, ",")+"]")
+			}
+			if len(parts) > 0 {
+				lines = append(lines, "merge.rules: "+strings.Join(parts, " "))
+			}
+		case "ini":
+			if r.INIRepeatedKeys != "" {
+				lines = append(lines, "merge.rules: repeated_keys="+strings.ToLower(r.INIRepeatedKeys))
+			}
+		default:
+			var parts []string
+			if r.Maps != "" {
+				parts = append(parts, "maps="+strings.ToLower(r.Maps))
+			}
+			if r.Arrays != "" {
+				parts = append(parts, "arrays="+strings.ToLower(r.Arrays))
+			}
+			if len(parts) > 0 {
+				lines = append(lines, "merge.rules: "+strings.Join(parts, " "))
+			}
+		}
+	}
+
+	lines = append(lines, fmt.Sprintf("sources[%d]:", len(rt.Files)))
+	for i, p := range rt.Files {
+		sha := ""
+		if b, err := os.ReadFile(p); err == nil {
+			sum := sha256.Sum256(b)
+			sha = hex.EncodeToString(sum[:])
+		}
+		lines = append(lines, fmt.Sprintf("  %d) %s sha256=%s", i+1, p, sha))
+	}
+
+	var buf bytes.Buffer
+	for _, l := range lines {
+		buf.WriteString(prefix)
+		buf.WriteString(l)
+		buf.WriteByte('\n')
+	}
+	buf.WriteByte('\n') // blank line after header
+	return buf.Bytes()
+}
+
+// parseOverrides parses --output-override TARGET=PATH flags into a map.
+func parseOverrides(list []string) (map[string]string, error) {
+	out := make(map[string]string, len(list))
+	for _, p := range list {
+		parts := strings.SplitN(p, "=", 2)
+		if len(parts) != 2 {
 			return nil, fmt.Errorf("invalid --output-override %q (expected TARGET=PATH)", p)
 		}
-		kv := strings.SplitN(p, "=", 2)
-		k := strings.TrimSpace(kv[0])
-		v := strings.TrimSpace(kv[1])
+		k := strings.TrimSpace(parts[0])
+		v := strings.TrimSpace(parts[1])
 		if k == "" || v == "" {
 			return nil, fmt.Errorf("invalid --output-override %q (empty key or value)", p)
 		}
@@ -41,18 +134,29 @@ func newBuildCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "build",
 		Short: "Build all targets once (no watch)",
-		Long: `Build reads the configuration file, plans sources, merges or concatenates, and writes outputs atomically.
+		Long: `Build reads the configuration file, resolves sources (globs, tilde, dedupe),
+merges or concatenates them per target, and writes outputs atomically.
 
-If -c/--config is not provided, confb uses:
-  ` + defaultConfigPath(),
-		Example: `  confb build
-  confb build -c ./confb.yaml
-  CONFB_CONFIG=./alt.yaml confb build --trace`,
+notes:
+  • loads default config from ~/.config/confb/confb.yaml unless -c is used or CONFB_CONFIG is set
+	• use --trace to print resolved baseDir, config path, the target plan and merge rules
+  • use --output-override TARGET=PATH to redirect a single target output
+  • if the target format supports comments (kdl/toml/yaml/ini), the output is annotated
+    with a header listing sources and (if present) merge rules. json/raw are never annotated.
+  • no file watching here; see 'confb run' for the daemon (watch & rebuild).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfgPath, err := resolveConfig(cmd)
-			if err != nil {
-				return err
+			// honor --chdir early
+			if chdir, _ := cmd.Root().Flags().GetString("chdir"); chdir != "" {
+				if err := os.Chdir(chdir); err != nil {
+					return fmt.Errorf("chdir %q: %w", chdir, err)
+				}
 			}
+
+			cfgPath, _ := cmd.Root().Flags().GetString("config")
+			if cfgPath == "" {
+				return errors.New("no config path (use -c/--config)")
+			}
+
 			cfg, err := config.Load(cfgPath)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
@@ -86,81 +190,110 @@ If -c/--config is not provided, confb uses:
 					return err
 				}
 
-				// show resolved files and any deduped ones
-				fmt.Fprintf(os.Stderr, "\nTARGET %q\n", rt.Name)
-				fmt.Fprintf(os.Stderr, "  output: %s\n", rt.Output)
-				fmt.Fprintf(os.Stderr, "  files (%d):\n", len(rt.Files))
-				for i, f := range rt.Files {
-					fmt.Fprintf(os.Stderr, "    %2d. %s\n", i+1, f)
-				}
-				if len(rt.Deduped) > 0 {
-					fmt.Fprintf(os.Stderr, "  deduped (%d):\n", len(rt.Deduped))
-					for _, d := range rt.Deduped {
-						fmt.Fprintf(os.Stderr, "    - %s\n", d)
+				if trace {
+					fmt.Fprintf(os.Stderr, "target: %s (format=%s)\n", t.Name, strings.ToLower(t.Format))
+					fmt.Fprintf(os.Stderr, "  output: %s\n", rt.Output)
+					if len(rt.Files) > 0 {
+						fmt.Fprintln(os.Stderr, "  files:")
+						for _, f := range rt.Files {
+							fmt.Fprintf(os.Stderr, "    - %s\n", f)
+						}
+					}
+					if t.Merge != nil && t.Merge.Rules != nil {
+						format := strings.ToLower(t.Format)
+						r := t.Merge.Rules
+						fmt.Fprintf(os.Stderr, "  merge.rules: ")
+						switch format {
+						case "kdl":
+							fmt.Fprintf(os.Stderr, "keys=%s section_keys=%v\n", strings.ToLower(r.KDLKeys), r.KDLSectionKeys)
+						case "ini":
+							fmt.Fprintf(os.Stderr, "repeated_keys=%s\n", strings.ToLower(r.INIRepeatedKeys))
+						default:
+							fmt.Fprintf(os.Stderr, "maps=%s arrays=%s\n", strings.ToLower(r.Maps), strings.ToLower(r.Arrays))
+						}
 					}
 				}
-
-				format := strings.ToLower(t.Format)
-				doMerge := t.Merge != nil && (format == "yaml" || format == "json" || format == "kdl" || format == "toml" || format == "ini")
 
 				if dryRun {
-					if doMerge {
-						fmt.Fprintf(os.Stderr, "  action: dry-run (merge: %s/%s)\n", format, mergeSummary(t.Merge.Rules))
-					} else {
-						fmt.Fprintf(os.Stderr, "  action: dry-run (concat)\n")
-					}
+					fmt.Fprintf(os.Stderr, "confb: %s -> %s (dry-run)\n", t.Name, rt.Output)
 					continue
 				}
 
-				if doMerge {
+				// merged vs concat path
+				if t.Merge != nil {
+					format := strings.ToLower(t.Format)
 					var content string
 					switch format {
-					case "yaml", "json", "toml":
+					case "yaml", "yml", "json", "toml":
 						content, err = blend.BlendStructured(format, t.Merge.Rules, rt.Files)
 					case "kdl":
 						content, err = blend.BlendKDL(t.Merge.Rules, rt.Files)
 					case "ini":
 						content, err = blend.BlendINI(t.Merge.Rules, rt.Files)
+					case "raw":
+						err = fmt.Errorf("merge not supported for format %q", t.Format)
 					default:
-						err = fmt.Errorf("unsupported merge format %q", format)
+						err = fmt.Errorf("unknown format %q", t.Format)
 					}
 					if err != nil {
 						return fmt.Errorf("%s: merge: %w", rt.Name, err)
 					}
-					if err := executor.WriteAtomic(rt.Output, content); err != nil {
-						return err
+
+					// prepend header if supported
+					header := headerForTarget(cmd, t, rt)
+					if header != nil {
+						var buf bytes.Buffer
+						buf.Write(header)
+						buf.WriteString(content)
+						if err := executor.WriteAtomic(rt.Output, buf.String()); err != nil {
+							return err
+						}
+					} else {
+						if err := executor.WriteAtomic(rt.Output, content); err != nil {
+							return err
+						}
 					}
 					fmt.Fprintf(os.Stderr, "  action: merged (%s) -> wrote %s\n", format, rt.Output)
 				} else {
-					if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
+					// concat; if header supported, we need to inject it by doing the concat here
+					header := headerForTarget(cmd, t, rt)
+					if header == nil {
+						if err := executor.BuildAndWrite(rt.Output, rt.Files); err != nil {
+							return err
+						}
+						fmt.Fprintf(os.Stderr, "  action: wrote %s\n", rt.Output)
+						continue
+					}
+					// concat with normalization: CRLF->LF, ensure LF final newline per file
+					var out bytes.Buffer
+					out.Write(header)
+					for _, f := range rt.Files {
+						b, err := os.ReadFile(f)
+						if err != nil {
+							return err
+						}
+						s := string(b)
+						s = strings.ReplaceAll(s, "\r\n", "\n")
+						s = strings.ReplaceAll(s, "\r", "\n")
+						if !strings.HasSuffix(s, "\n") {
+							s += "\n"
+						}
+						out.WriteString(s)
+					}
+					if err := executor.WriteAtomic(rt.Output, out.String()); err != nil {
 						return err
 					}
 					fmt.Fprintf(os.Stderr, "  action: wrote %s\n", rt.Output)
 				}
 			}
-
 			return nil
 		},
 	}
 
 	// flags for build
-	cmd.Flags().BoolVar(&trace, "trace", false, "print resolved baseDir and config details")
+	cmd.Flags().BoolVar(&trace, "trace", false, "print resolved baseDir, config path, and per-target plan")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "validate and plan only; do not write outputs")
 	cmd.Flags().StringArrayVar(&overridesFlag, "output-override", nil, "override TARGET=PATH (repeatable)")
 
 	return cmd
-}
-
-func mergeSummary(r *config.MergeRules) string {
-	if r == nil {
-		return ""
-	}
-	var parts []string
-	if r.Maps != "" {
-		parts = append(parts, "maps="+strings.ToLower(r.Maps))
-	}
-	if r.Arrays != "" {
-		parts = append(parts, "arrays="+strings.ToLower(r.Arrays))
-	}
-	return strings.Join(parts, ",")
 }
